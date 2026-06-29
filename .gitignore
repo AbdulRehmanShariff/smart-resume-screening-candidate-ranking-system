@@ -5,6 +5,8 @@
 
 # ---- Environment & Secrets (NEVER COMMIT) ----
 .env
+.env.*
+!.env.example
 .env.local
 .env.production
 .env.staging
@@ -13,6 +15,7 @@
 secrets/
 
 # ---- Python ----
+.python-version
 __pycache__/
 *.py[cod]
 *$py.class
@@ -87,6 +90,7 @@ frontend/out/
 *~
 .DS_Store
 Thumbs.db
+ehthumbs.db
 desktop.ini
 
 # ---- Docker ----
