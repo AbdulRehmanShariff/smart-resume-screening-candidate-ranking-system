@@ -1,0 +1,53 @@
+# ==============================================================
+# Smart Resume Screening & Candidate Ranking System
+# Python Dependencies — Backend
+# ==============================================================
+# Install with: pip install -r requirements.txt
+# ==============================================================
+
+# ---- Core Flask Framework ----
+Flask==3.1.1
+Werkzeug==3.1.3
+
+# ---- Database ORM & Migrations ----
+Flask-SQLAlchemy==3.1.1
+SQLAlchemy==2.0.36
+Flask-Migrate==4.1.0
+psycopg2-binary==2.9.10
+
+# ---- Authentication & Security ----
+Flask-JWT-Extended==4.7.1
+Flask-Bcrypt==1.0.1
+
+# ---- Email ----
+Flask-Mail==0.10.0
+
+# ---- Cross-Origin Resource Sharing ----
+Flask-CORS==5.0.1
+
+# ---- Input Validation & Serialization ----
+marshmallow==3.26.1
+email-validator==2.2.0
+
+# ---- Environment Variables ----
+python-dotenv==1.1.0
+
+# ---- Production WSGI Server ----
+gunicorn==23.0.0
+
+# ---- Testing ----
+pytest==8.4.1
+pytest-flask==1.3.0
+
+# ==============================================================
+# AI & NLP Dependencies (Added in Stage 4)
+# ==============================================================
+# google-generativeai==0.8.3
+# sentence-transformers==3.3.1
+# spacy==3.8.3
+# faiss-cpu==1.9.0.post1
+# PyMuPDF==1.25.1
+# python-docx==1.1.2
+# pytesseract==0.3.13
+# Pillow==11.1.0
+# ==============================================================
