@@ -84,6 +84,10 @@ class BaseConfig:
         "MAIL_DEFAULT_SENDER", "noreply@smartresume.com"
     )
 
+    # Base URL of the frontend — used to build email verification and
+    # password reset links embedded in transactional emails.
+    FRONTEND_URL: str = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
     # ------------------------------------------------------------------
     # File Uploads
     # ------------------------------------------------------------------

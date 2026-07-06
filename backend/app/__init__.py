@@ -168,8 +168,9 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(health_bp, url_prefix=api_prefix)
 
     # ---- Authentication (Stage 2) ----
-    # from app.api.auth.routes import auth_bp
-    # app.register_blueprint(auth_bp, url_prefix=f"{api_prefix}/auth")
+    from app.api.auth.routes import auth_bp
+    app.register_blueprint(auth_bp, url_prefix=f"{api_prefix}/auth")
+
 
     # ---- Jobs (Stage 3) ----
     # from app.api.jobs.routes import jobs_bp

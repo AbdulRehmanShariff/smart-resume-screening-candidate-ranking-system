@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to Smart Resume!</title>
+  <style>
+    body { margin: 0; padding: 0; background-color: #f0f4f8; font-family: 'Segoe UI', Arial, sans-serif; }
+    .wrapper { width: 100%; background-color: #f0f4f8; padding: 40px 20px; box-sizing: border-box; }
+    .card { max-width: 560px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+    .header { background: linear-gradient(135deg, #059669 0%, #0d9488 100%); padding: 40px 40px 32px; text-align: center; }
+    .header-icon { font-size: 56px; margin-bottom: 12px; display: block; }
+    .header h1 { color: #ffffff; font-size: 26px; font-weight: 700; margin: 0; }
+    .header p { color: rgba(255,255,255,0.85); font-size: 14px; margin: 8px 0 0; }
+    .body { padding: 40px; }
+    .greeting { font-size: 20px; font-weight: 600; color: #1e293b; margin: 0 0 16px; }
+    .text { font-size: 15px; color: #475569; line-height: 1.65; margin: 0 0 24px; }
+    .features { list-style: none; padding: 0; margin: 0 0 28px; }
+    .features li { font-size: 14px; color: #475569; padding: 8px 0; border-bottom: 1px solid #f1f5f9; display: flex; align-items: flex-start; gap: 10px; }
+    .features li:last-child { border-bottom: none; }
+    .feature-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+    .btn-wrapper { text-align: center; margin: 28px 0; }
+    .btn { display: inline-block; background: linear-gradient(135deg, #059669 0%, #0d9488 100%); color: #ffffff !important; text-decoration: none; font-size: 16px; font-weight: 600; padding: 14px 36px; border-radius: 8px; }
+    .divider { border: none; border-top: 1px solid #e2e8f0; margin: 28px 0; }
+    .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 40px; text-align: center; }
+    .footer p { font-size: 12px; color: #94a3b8; margin: 0; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="card">
+      <div class="header">
+        <span class="header-icon">&#127881;</span>
+        <h1>Welcome to Smart Resume!</h1>
+        <p>Your account is now active and ready to use.</p>
+      </div>
+      <div class="body">
+        <p class="greeting">Hi {{ first_name }},</p>
+        <p class="text">
+          Your email has been verified and your <strong>{{ role_label }}</strong> account
+          on <strong>Smart Resume</strong> is now fully active.
+          Here's what you can do next:
+        </p>
+
+        {% if role == "candidate" %}
+        <ul class="features">
+          <li><span class="feature-icon">&#128196;</span> Upload your resume and get AI-powered feedback</li>
+          <li><span class="feature-icon">&#128269;</span> Search and apply to relevant job postings</li>
+          <li><span class="feature-icon">&#128200;</span> Track your application status in real time</li>
+          <li><span class="feature-icon">&#129302;</span> Receive AI-ranked match scores for every job</li>
+        </ul>
+        {% else %}
+        <ul class="features">
+          <li><span class="feature-icon">&#128196;</span> Post job openings and attract top talent</li>
+          <li><span class="feature-icon">&#129302;</span> Review AI-ranked candidate shortlists</li>
+          <li><span class="feature-icon">&#128200;</span> Manage your entire hiring pipeline</li>
+          <li><span class="feature-icon">&#128233;</span> Send interview invitations and track responses</li>
+        </ul>
+        {% endif %}
+
+        <div class="btn-wrapper">
+          <a href="{{ dashboard_url }}" class="btn">Go to Dashboard</a>
+        </div>
+
+        <hr class="divider" />
+        <p style="font-size:13px;color:#94a3b8;text-align:center;margin:0;">
+          Need help? Reply to this email or visit our support centre.
+        </p>
+      </div>
+      <div class="footer">
+        <p>&copy; 2026 Smart Resume Screening System. All rights reserved.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
