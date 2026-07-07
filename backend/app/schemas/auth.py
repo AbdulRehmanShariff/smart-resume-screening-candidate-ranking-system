@@ -508,3 +508,407 @@ class ResendVerificationSchema(Schema):
         if "email" in data and isinstance(data["email"], str):
             data["email"] = data["email"].strip().lower()
         return data
+
+
+# ---------------------------------------------------------------------------
+# Change Password Schema  (Batch 2D)
+# ---------------------------------------------------------------------------
+
+
+class ChangePasswordSchema(Schema):
+    """
+    Validate POST /auth/change-password request body.
+
+    Requires the caller's current password for re-authentication so that
+    a stolen session token alone cannot be used to change the password.
+
+    Accepted fields:
+      current_password : string, required, load_only
+      new_password     : string, required, load_only, 8-128 chars
+    """
+
+    class Meta:
+        unknown = EXCLUDE
+
+    current_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Length(min=1, max=_MAX_PASSWORD_LEN),
+        metadata={"description": "The user's current password for re-authentication."},
+    )
+
+    new_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Length(
+            min=_MIN_PASSWORD_LEN,
+            max=_MAX_PASSWORD_LEN,
+            error=(
+                f"New password must be between {_MIN_PASSWORD_LEN} "
+                f"and {_MAX_PASSWORD_LEN} characters."
+            ),
+        ),
+        metadata={"description": "The replacement password. Will be bcrypt-hashed."},
+    )
+
+    @validates("new_password")
+    def validate_new_password_strength(self, value: str) -> None:
+        """Require at least one letter and one digit."""
+        has_letter = any(c.isalpha() for c in value)
+        has_digit = any(c.isdigit() for c in value)
+        if not has_letter or not has_digit:
+            raise ValidationError(
+                "New password must contain at least one letter and one digit."
+            )
+
+    def validate_passwords_different(
+        self, data: dict, **kwargs: Any
+    ) -> None:
+        """Reject new_password == current_password (post-load cross-field check)."""
+        cur = data.get("current_password", "")
+        new = data.get("new_password", "")
+        if cur and new and cur == new:
+            raise ValidationError(
+                {"new_password": ["New password must differ from the current password."]}
+            )
+
+
+# ---------------------------------------------------------------------------
+# Change Email Schema  (Batch 2D)
+# ---------------------------------------------------------------------------
+
+
+class ChangeEmailSchema(Schema):
+    """
+    Validate POST /auth/change-email request body.
+
+    Changing email re-triggers the email verification flow: the new address
+    is stored unverified and a verification link is dispatched.
+    The current password must be confirmed to prevent account takeover
+    via a stolen session token.
+
+    Accepted fields:
+      new_email        : string, required, valid email format
+      current_password : string, required, load_only
+    """
+
+    class Meta:
+        unknown = EXCLUDE
+
+    new_email = fields.Email(
+        required=True,
+        validate=validate.Length(max=_EMAIL_MAX_LEN),
+        metadata={"description": "The new email address to switch to."},
+    )
+
+    current_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Length(min=1, max=_MAX_PASSWORD_LEN),
+        metadata={"description": "Current password for re-authentication."},
+    )
+
+    @pre_load
+    def normalise_input(self, data: dict, **kwargs: Any) -> dict:
+        """Normalise new_email to lowercase and strip whitespace."""
+        if not isinstance(data, dict):
+            return data
+        if "new_email" in data and isinstance(data["new_email"], str):
+            data["new_email"] = data["new_email"].strip().lower()
+        return data
+
+
+# ---------------------------------------------------------------------------
+# Update Candidate Profile Schema  (Batch 2D)
+# ---------------------------------------------------------------------------
+
+
+_URL_MAX_LEN: int = 500
+_CANDIDATE_AVAILABILITY_CHOICES = [
+    "immediately", "two_weeks", "one_month", "not_looking",
+]
+
+
+class UpdateCandidateProfileSchema(Schema):
+    """
+    Validate PATCH /auth/profile/candidate request body.
+
+    All fields are optional — the client sends only the fields to update.
+    Omitted fields are left unchanged in the database (partial update).
+
+    Accepted fields (all optional):
+      first_name          : string, 1-100 chars
+      last_name           : string, 1-100 chars
+      phone               : string, optional
+      headline            : string, max 255 chars
+      summary             : string (Text — no max enforced here)
+      location            : string, max 255 chars
+      linkedin_url        : URL string, max 500 chars
+      github_url          : URL string, max 500 chars
+      portfolio_url       : URL string, max 500 chars
+      years_of_experience : float, >= 0, <= 50
+      availability        : one of the CandidateProfile availability constants
+    """
+
+    class Meta:
+        unknown = EXCLUDE
+
+    # -- User table fields --
+    first_name = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(min=1, max=_NAME_MAX_LEN),
+        metadata={"description": "Given name."},
+    )
+
+    last_name = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(min=1, max=_NAME_MAX_LEN),
+        metadata={"description": "Family name."},
+    )
+
+    phone = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=20),
+        metadata={"description": "Optional phone number."},
+    )
+
+    # -- Candidate profile table fields --
+    headline = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=255),
+        metadata={"description": "Professional headline."},
+    )
+
+    summary = fields.Str(
+        load_default=None,
+        allow_none=True,
+        metadata={"description": "Professional summary / bio."},
+    )
+
+    location = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=255),
+        metadata={"description": "City and/or country."},
+    )
+
+    linkedin_url = fields.Url(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=_URL_MAX_LEN),
+        metadata={"description": "LinkedIn profile URL."},
+    )
+
+    github_url = fields.Url(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=_URL_MAX_LEN),
+        metadata={"description": "GitHub profile URL."},
+    )
+
+    portfolio_url = fields.Url(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=_URL_MAX_LEN),
+        metadata={"description": "Portfolio/personal site URL."},
+    )
+
+    years_of_experience = fields.Float(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Range(
+            min=0,
+            max=50,
+            error="years_of_experience must be between 0 and 50.",
+        ),
+        metadata={"description": "Total years of professional experience."},
+    )
+
+    availability = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.OneOf(
+            choices=_CANDIDATE_AVAILABILITY_CHOICES,
+            error=(
+                "availability must be one of: "
+                + ", ".join(_CANDIDATE_AVAILABILITY_CHOICES) + "."
+            ),
+        ),
+        metadata={"description": "Current job-search availability status."},
+    )
+
+    @pre_load
+    def normalise_input(self, data: dict, **kwargs: Any) -> dict:
+        """Strip whitespace from string fields; convert empty strings to None."""
+        if not isinstance(data, dict):
+            return data
+        str_fields = (
+            "first_name", "last_name", "phone", "headline",
+            "summary", "location",
+        )
+        for field in str_fields:
+            if field in data and isinstance(data[field], str):
+                data[field] = data[field].strip() or None
+        url_fields = ("linkedin_url", "github_url", "portfolio_url")
+        for field in url_fields:
+            if field in data and isinstance(data[field], str):
+                data[field] = data[field].strip() or None
+        return data
+
+    @validates("first_name")
+    def validate_first_name(self, value: str | None) -> None:
+        if value is not None and not value.strip():
+            raise ValidationError("First name must not be blank.")
+
+    @validates("last_name")
+    def validate_last_name(self, value: str | None) -> None:
+        if value is not None and not value.strip():
+            raise ValidationError("Last name must not be blank.")
+
+    @validates("phone")
+    def validate_phone(self, value: str | None) -> None:
+        if value is None:
+            return
+        if not _PHONE_RE.match(value):
+            raise ValidationError(
+                "Phone number must be 7–20 characters and may only contain "
+                "digits, spaces, hyphens, parentheses, and the plus sign."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Update Recruiter Profile Schema  (Batch 2D)
+# ---------------------------------------------------------------------------
+
+
+_RECRUITER_SIZE_CHOICES = ["startup", "small", "medium", "large", "enterprise"]
+
+
+class UpdateRecruiterProfileSchema(Schema):
+    """
+    Validate PATCH /auth/profile/recruiter request body.
+
+    All fields are optional — the client sends only the fields to update.
+
+    Accepted fields (all optional):
+      first_name      : string, 1-100 chars
+      last_name       : string, 1-100 chars
+      phone           : string, optional
+      company_name    : string, 1-255 chars (required at DB level, validated here)
+      company_website : URL string, max 500 chars
+      company_size    : one of the RecruiterProfile size constants
+      industry        : string, max 100 chars
+      designation     : string, max 255 chars
+    """
+
+    class Meta:
+        unknown = EXCLUDE
+
+    # -- User table fields --
+    first_name = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(min=1, max=_NAME_MAX_LEN),
+        metadata={"description": "Given name."},
+    )
+
+    last_name = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(min=1, max=_NAME_MAX_LEN),
+        metadata={"description": "Family name."},
+    )
+
+    phone = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=20),
+        metadata={"description": "Optional phone number."},
+    )
+
+    # -- Recruiter profile table fields --
+    company_name = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(min=1, max=255),
+        metadata={"description": "Company name."},
+    )
+
+    company_website = fields.Url(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=_URL_MAX_LEN),
+        metadata={"description": "Company website URL."},
+    )
+
+    company_size = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.OneOf(
+            choices=_RECRUITER_SIZE_CHOICES,
+            error=(
+                "company_size must be one of: "
+                + ", ".join(_RECRUITER_SIZE_CHOICES) + "."
+            ),
+        ),
+        metadata={"description": "Approximate number of employees."},
+    )
+
+    industry = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=100),
+        metadata={"description": "Industry or sector."},
+    )
+
+    designation = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=255),
+        metadata={"description": "Recruiter's job title."},
+    )
+
+    @pre_load
+    def normalise_input(self, data: dict, **kwargs: Any) -> dict:
+        """Strip whitespace from string fields; convert empty strings to None."""
+        if not isinstance(data, dict):
+            return data
+        str_fields = (
+            "first_name", "last_name", "phone",
+            "company_name", "industry", "designation",
+        )
+        for field in str_fields:
+            if field in data and isinstance(data[field], str):
+                data[field] = data[field].strip() or None
+        if "company_website" in data and isinstance(data["company_website"], str):
+            data["company_website"] = data["company_website"].strip() or None
+        return data
+
+    @validates("first_name")
+    def validate_first_name(self, value: str | None) -> None:
+        if value is not None and not value.strip():
+            raise ValidationError("First name must not be blank.")
+
+    @validates("last_name")
+    def validate_last_name(self, value: str | None) -> None:
+        if value is not None and not value.strip():
+            raise ValidationError("Last name must not be blank.")
+
+    @validates("phone")
+    def validate_phone(self, value: str | None) -> None:
+        if value is None:
+            return
+        if not _PHONE_RE.match(value):
+            raise ValidationError(
+                "Phone number must be 7–20 characters and may only contain "
+                "digits, spaces, hyphens, parentheses, and the plus sign."
+            )
+
+    @validates("company_name")
+    def validate_company_name(self, value: str | None) -> None:
+        if value is not None and not value.strip():
+            raise ValidationError("Company name must not be blank.")

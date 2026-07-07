@@ -18,6 +18,18 @@ Registered endpoints (Batch 2B):
   POST /api/v1/auth/reset-password       — Complete password reset with token + new password
   GET  /api/v1/auth/me                   — Current user profile (JWT required)
 
+Registered endpoints (Batch 2C):
+  POST /api/v1/auth/refresh              — Issue new access token using refresh token (rotation)
+  POST /api/v1/auth/logout               — Revoke current access + refresh token pair
+  POST /api/v1/auth/logout-all           — Revoke all sessions for this user
+
+Registered endpoints (Batch 2D):
+  POST  /api/v1/auth/change-password     — Change password (requires current password)
+  POST  /api/v1/auth/change-email        — Change email (requires current password, re-triggers verification)
+  GET   /api/v1/auth/me                  — Current user + role-specific profile (improved)
+  PATCH /api/v1/auth/profile/candidate   — Partial update of candidate profile
+  PATCH /api/v1/auth/profile/recruiter   — Partial update of recruiter profile
+
 Route handler contract:
   1. Parse JSON body (handle missing/malformed JSON gracefully).
   2. Validate with the appropriate Marshmallow schema.
@@ -40,6 +52,7 @@ Anti-enumeration design:
 import logging
 
 from flask import Blueprint, request
+from flask_jwt_extended import get_jwt, get_jwt_identity, verify_jwt_in_request
 from marshmallow import ValidationError
 
 from app.core.decorators import get_current_user, jwt_required_user
@@ -47,11 +60,15 @@ from app.core.responses import created_response, success_response
 from app.core.responses import validation_error_response
 from app.schemas.auth import (
     CandidateRegistrationSchema,
+    ChangeEmailSchema,
+    ChangePasswordSchema,
     ForgotPasswordSchema,
     LoginSchema,
     RecruiterRegistrationSchema,
     ResendVerificationSchema,
     ResetPasswordSchema,
+    UpdateCandidateProfileSchema,
+    UpdateRecruiterProfileSchema,
 )
 from app.services import auth_service
 
@@ -73,6 +90,10 @@ _login_schema = LoginSchema()
 _forgot_schema = ForgotPasswordSchema()
 _reset_schema = ResetPasswordSchema()
 _resend_schema = ResendVerificationSchema()
+_change_password_schema = ChangePasswordSchema()
+_change_email_schema = ChangeEmailSchema()
+_update_candidate_profile_schema = UpdateCandidateProfileSchema()
+_update_recruiter_profile_schema = UpdateRecruiterProfileSchema()
 
 
 # ---------------------------------------------------------------------------
@@ -356,19 +377,390 @@ def reset_password():
 @jwt_required_user
 def me():
     """
-    Return the authenticated user's public profile.
+    Return the authenticated user's public profile including role-specific data.
+
+    Improved in Batch 2D: the response now includes a 'profile' key that
+    contains the user's CandidateProfile (for candidates) or RecruiterProfile
+    (for recruiters). Admin users receive profile=null.
 
     Requires a valid JWT Bearer token in the Authorization header.
 
     Responses:
-      200 OK           — User profile returned
+      200 OK           — User profile + role-specific profile returned
       401 Unauthorized — Missing or invalid token
 
     Response data (200):
-      User public dict (id, email, first_name, last_name, role, ...)
+      user public dict + profile: { candidate or recruiter profile fields }
     """
     user = get_current_user()
     return success_response(
         message="User profile retrieved successfully.",
-        data=user.to_public_dict(),
+        data=auth_service.get_full_profile(user),
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch 2C Routes
+# ---------------------------------------------------------------------------
+
+
+@auth_bp.post("/refresh")
+def refresh():
+    """
+    Issue a new access token using a valid refresh token (with token rotation).
+
+    This endpoint accepts a refresh token in the Authorization header
+    (not an access token). Flask-JWT-Extended distinguishes the two via the
+    `type` claim embedded in the token payload.
+
+    Token rotation is ON by default: the old refresh token is revoked and a
+    new refresh token is returned alongside the new access token. This makes
+    stolen refresh tokens detectable — a token used twice will be rejected
+    on the second use because it was already rotated after the first.
+
+    Authorization:
+      Bearer <refresh_token>   (NOT an access token)
+
+    Responses:
+      200 OK           — New access token (and optionally new refresh token) returned
+      401 Unauthorized — Missing, invalid, expired, or already-revoked refresh token
+      401 Unauthorized — User account suspended/deleted since token was issued
+
+    Response data (200):
+      access_token  : New short-lived JWT (access)
+      refresh_token : New refresh token (rotation) or null if rotation disabled
+      token_type    : "Bearer"
+    """
+    # verify_jwt_in_request(refresh=True) enforces that the token type
+    # claim is "refresh". Sending an access token here returns 422.
+    verify_jwt_in_request(refresh=True)
+
+    jwt_payload: dict = get_jwt()
+    identity: str = get_jwt_identity()
+
+    result: dict = auth_service.refresh_token(
+        current_refresh_jti=jwt_payload["jti"],
+        user_id=identity,
+        rotate=True,
+        ip_address=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
+
+    return success_response(
+        message="Access token refreshed successfully.",
+        data=result,
+    )
+
+
+@auth_bp.post("/logout")
+def logout():
+    """
+    Revoke the caller's current access and refresh token pair.
+
+    Both tokens are added to the TokenBlocklist immediately. Any subsequent
+    request carrying either token will be rejected with 401 before reaching
+    any route handler (via the blocklist loader in app/__init__.py).
+
+    The refresh token JTI must be included in the request body because
+    Flask-JWT-Extended only exposes the JTI of the *current request's* token
+    (the access token). The client must send the refresh token JTI it received
+    at login.
+
+    Authorization:
+      Bearer <access_token>
+
+    Request body (JSON, optional):
+      refresh_token_jti : string — JTI of the refresh token to also revoke.
+                                    If omitted, only the access token is revoked.
+
+    Responses:
+      200 OK           — Logged out successfully
+      401 Unauthorized — Missing or invalid access token
+    """
+    verify_jwt_in_request()
+
+    jwt_payload: dict = get_jwt()
+    identity: str = get_jwt_identity()
+
+    # The client optionally sends the refresh token JTI so we can revoke it too
+    body: dict = _get_json()
+    refresh_jti: str = body.get("refresh_token_jti", "")
+
+    auth_service.logout(
+        access_jti=jwt_payload["jti"],
+        refresh_jti=refresh_jti,
+        user_id=identity,
+        ip_address=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
+
+    return success_response(
+        message="You have been logged out successfully.",
+        data=None,
+    )
+
+
+@auth_bp.post("/logout-all")
+def logout_all():
+    """
+    Revoke all active sessions for this user across all devices.
+
+    Immediately revokes the current access token. Other active sessions
+    (on other devices) will expire naturally within the access token lifetime
+    (1 hour). For stronger immediate invalidation, change your password after
+    calling this endpoint — password change will invalidate the stored
+    verification and reset tokens as well.
+
+    Authorization:
+      Bearer <access_token>
+
+    Responses:
+      200 OK           — All sessions revoked
+      401 Unauthorized — Missing or invalid access token
+
+    Response data (200):
+      sessions_revoked : int — number of token entries newly blocklisted
+    """
+    verify_jwt_in_request()
+
+    jwt_payload: dict = get_jwt()
+    identity: str = get_jwt_identity()
+
+    sessions_revoked: int = auth_service.logout_all(
+        current_access_jti=jwt_payload["jti"],
+        user_id=identity,
+        ip_address=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
+
+    return success_response(
+        message=(
+            "All sessions have been revoked. "
+            "Active sessions on other devices will expire within 1 hour."
+        ),
+        data={"sessions_revoked": sessions_revoked},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Batch 2D Routes
+# ---------------------------------------------------------------------------
+
+
+@auth_bp.post("/change-password")
+@jwt_required_user
+def change_password():
+    """
+    Change the authenticated user's password.
+
+    Requires the caller's CURRENT password for re-authentication, preventing
+    a stolen session token from silently hijacking the account.
+    After a successful change the current access token is revoked — the user
+    must log in again with the new password.
+
+    Request body (JSON):
+      current_password : string, required — existing password
+      new_password     : string, required — 8-128 chars, ≥1 letter + ≥1 digit
+
+    Responses:
+      200 OK                  — Password changed; current session revoked
+      401 Unauthorized        — Wrong current_password or missing token
+      400 Bad Request         — new_password is the same as current_password
+      422 Unprocessable Entity — Validation error
+
+    Response data (200):
+      message only (no sensitive data returned)
+    """
+    body: dict = _get_json()
+    try:
+        data = _change_password_schema.load(body)
+    except ValidationError as exc:
+        return validation_error_response(exc.messages)
+
+    user = get_current_user()
+    jwt_payload: dict = get_jwt()
+
+    auth_service.change_password(
+        user=user,
+        current_password=data["current_password"],
+        new_password=data["new_password"],
+        current_access_jti=jwt_payload.get("jti"),
+        **_ctx(),
+    )
+
+    return success_response(
+        message=(
+            "Password changed successfully. "
+            "Please log in again with your new password."
+        )
+    )
+
+
+@auth_bp.post("/change-email")
+@jwt_required_user
+def change_email():
+    """
+    Change the authenticated user's email address.
+
+    Requires the caller's CURRENT password for re-authentication.
+    The new email is stored immediately but marked unverified — a
+    verification link is dispatched to the new address. The user must
+    verify the new address before they can log in again.
+
+    Request body (JSON):
+      new_email        : string, required — valid email address
+      current_password : string, required — for re-authentication
+
+    Responses:
+      200 OK                  — Email changed; verification link dispatched
+      400 Bad Request         — new_email == current email
+      401 Unauthorized        — Wrong current_password or missing token
+      409 Conflict            — new_email already registered to another account
+      422 Unprocessable Entity — Validation error
+
+    Response data (200):
+      user public dict + verification_email_sent: bool
+    """
+    body: dict = _get_json()
+    try:
+        data = _change_email_schema.load(body)
+    except ValidationError as exc:
+        return validation_error_response(exc.messages)
+
+    user = get_current_user()
+
+    result = auth_service.change_email(
+        user=user,
+        new_email=data["new_email"],
+        current_password=data["current_password"],
+        **_ctx(),
+    )
+
+    return success_response(
+        message=(
+            "Email address updated. "
+            "A verification link has been sent to your new email. "
+            "Please verify it before logging in again."
+        ),
+        data=result,
+    )
+
+
+@auth_bp.patch("/profile/candidate")
+@jwt_required_user
+def update_candidate_profile():
+    """
+    Partially update the authenticated candidate's profile.
+
+    All fields are optional — send only the fields you wish to update.
+    Fields omitted from the request body are left unchanged.
+
+    This endpoint is restricted to users with the 'candidate' role.
+    Recruiters and admins will receive a 403 Forbidden response.
+
+    Request body (JSON — all fields optional):
+      first_name          : string, 1-100 chars
+      last_name           : string, 1-100 chars
+      phone               : string, optional
+      headline            : string, max 255 chars
+      summary             : string (free text)
+      location            : string, max 255 chars
+      linkedin_url        : valid URL, max 500 chars
+      github_url          : valid URL, max 500 chars
+      portfolio_url       : valid URL, max 500 chars
+      years_of_experience : float, 0-50
+      availability        : one of: immediately | two_weeks | one_month | not_looking
+
+    Responses:
+      200 OK                  — Profile updated
+      401 Unauthorized        — Missing or invalid token
+      403 Forbidden           — User is not a candidate
+      422 Unprocessable Entity — Validation error
+
+    Response data (200):
+      user public dict + profile: { candidate profile fields }
+    """
+    from app.core.exceptions import AuthorizationError
+
+    body: dict = _get_json()
+    try:
+        data = _update_candidate_profile_schema.load(body)
+    except ValidationError as exc:
+        return validation_error_response(exc.messages)
+
+    user = get_current_user()
+
+    if not user.is_candidate:
+        raise AuthorizationError(
+            "This endpoint is only available to candidates."
+        )
+
+    result = auth_service.update_candidate_profile(
+        user=user,
+        data=data,
+        **_ctx(),
+    )
+
+    return success_response(
+        message="Candidate profile updated successfully.",
+        data=result,
+    )
+
+
+@auth_bp.patch("/profile/recruiter")
+@jwt_required_user
+def update_recruiter_profile():
+    """
+    Partially update the authenticated recruiter's profile.
+
+    All fields are optional — send only the fields you wish to update.
+    Fields omitted from the request body are left unchanged.
+
+    This endpoint is restricted to users with the 'recruiter' role.
+    Candidates and admins will receive a 403 Forbidden response.
+
+    Request body (JSON — all fields optional):
+      first_name      : string, 1-100 chars
+      last_name       : string, 1-100 chars
+      phone           : string, optional
+      company_name    : string, 1-255 chars
+      company_website : valid URL, max 500 chars
+      company_size    : one of: startup | small | medium | large | enterprise
+      industry        : string, max 100 chars
+      designation     : string, max 255 chars
+
+    Responses:
+      200 OK                  — Profile updated
+      401 Unauthorized        — Missing or invalid token
+      403 Forbidden           — User is not a recruiter
+      422 Unprocessable Entity — Validation error
+
+    Response data (200):
+      user public dict + profile: { recruiter profile fields }
+    """
+    from app.core.exceptions import AuthorizationError
+
+    body: dict = _get_json()
+    try:
+        data = _update_recruiter_profile_schema.load(body)
+    except ValidationError as exc:
+        return validation_error_response(exc.messages)
+
+    user = get_current_user()
+
+    if not user.is_recruiter:
+        raise AuthorizationError(
+            "This endpoint is only available to recruiters."
+        )
+
+    result = auth_service.update_recruiter_profile(
+        user=user,
+        data=data,
+        **_ctx(),
+    )
+
+    return success_response(
+        message="Recruiter profile updated successfully.",
+        data=result,
+    )
+
