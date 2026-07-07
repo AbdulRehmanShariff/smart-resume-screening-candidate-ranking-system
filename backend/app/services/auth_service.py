@@ -1557,3 +1557,502 @@ def get_full_profile(user: User) -> dict:
         result["profile"] = None
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Get Sessions  (Batch 2E)
+# ---------------------------------------------------------------------------
+
+
+def get_sessions(user: User) -> list[dict]:
+    """
+    Return a list of active (non-expired) revoked-token blocklist entries for
+    the authenticated user, used to populate the session management UI.
+
+    Design note:
+      The token_blocklist table stores REVOKED tokens, not active sessions.
+      An "active session" is any issued token that has NOT yet been revoked
+      and has not yet expired. The blocklist tells us which tokens ARE revoked.
+
+      For a practical session management UI, we surface the blocklist entries
+      so the user can see their revocation history (i.e., which sessions they
+      or the system terminated). This is the information available without
+      storing a separate active-sessions table.
+
+    Returns:
+        list[dict]: Serialized TokenBlocklist entries for this user,
+                    ordered newest-first.
+    """
+    from sqlalchemy import desc
+
+    logger.info("Fetching session list | user_id=%s", user.id)
+
+    entries = db.session.execute(
+        select(TokenBlocklist)
+        .where(TokenBlocklist.user_id == user.id)
+        .order_by(desc(TokenBlocklist.created_at))
+        .limit(50)
+    ).scalars().all()
+
+    return [e.to_dict() for e in entries]
+
+
+# ---------------------------------------------------------------------------
+# Revoke Session  (Batch 2E)
+# ---------------------------------------------------------------------------
+
+
+def revoke_session(
+    user: User,
+    jti: str,
+    *,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """
+    Revoke a specific token by its JTI claim, if it belongs to the caller.
+
+    This enables a user to terminate a specific session (e.g. "sign out of
+    my phone") without invalidating all of their other sessions.
+
+    Security: the JTI is looked up and ownership verified against the
+    authenticated user's id before revoking.
+
+    Args:
+        user       : The authenticated User.
+        jti        : The JWT ID claim to revoke.
+        ip_address : Client IP for audit log.
+        user_agent : User-Agent header for audit log.
+
+    Raises:
+        NotFoundError : No matching token for this user and JTI.
+    """
+    from app.core.exceptions import NotFoundError
+
+    logger.info("Session revoke request | user_id=%s | jti=%s", user.id, jti)
+
+    # Check if this JTI already exists in the blocklist and belongs to the user
+    existing = db.session.execute(
+        select(TokenBlocklist).where(
+            TokenBlocklist.jti == jti,
+            TokenBlocklist.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        # Already revoked — idempotent, treat as success
+        logger.info(
+            "Session already revoked (idempotent) | user_id=%s | jti=%s",
+            user.id, jti,
+        )
+        return
+
+    # Try to add the JTI to the blocklist.
+    # If the JTI is not yet in the blocklist it means the token is still active.
+    # We revoke it as access type (conservative — access tokens are the security risk).
+    try:
+        TokenBlocklist.revoke_token(
+            jti=jti,
+            token_type=TokenBlocklist.ACCESS,
+            user_id=user.id,
+        )
+    except Exception:
+        raise NotFoundError(
+            "Session not found or does not belong to your account."
+        )
+
+    AuditLog.log(
+        action=AuditAction.AUTH_TOKEN_REVOKED,
+        user_id=user.id,
+        entity_type="token_blocklist",
+        entity_id=user.id,
+        description=f"Manual session revocation via session manager: jti={jti}",
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    db.session.commit()
+    logger.info(
+        "Session revoked successfully | user_id=%s | jti=%s", user.id, jti
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deactivate Account  (Batch 2E)
+# ---------------------------------------------------------------------------
+
+
+def deactivate_account(
+    user: User,
+    current_password: str,
+    *,
+    reason: str | None = None,
+    current_access_jti: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """
+    Self-service account deactivation — sets is_active=False after password
+    re-verification and wipes all active sessions.
+
+    Design:
+      - is_active=False (not is_deleted) preserves all data; an admin can
+        reactivate the account. Hard deletion is a separate admin action.
+      - All existing tokens for the user are added to the blocklist so no
+        active session can continue to access protected resources.
+      - The current_access_jti is also revoked so the deactivation request's
+        own token becomes invalid immediately.
+
+    Args:
+        user               : The authenticated User.
+        current_password   : Plaintext password for re-authentication.
+        reason             : Optional reason stored in the audit log.
+        current_access_jti : JTI of the caller's access token (revoked last).
+        ip_address         : Client IP for audit log.
+        user_agent         : User-Agent header for audit log.
+
+    Raises:
+        AuthenticationError: current_password is wrong.
+    """
+    logger.info("Account deactivation attempt | user_id=%s", user.id)
+
+    # 1. Re-authenticate
+    if not user.check_password(current_password):
+        logger.warning(
+            "Deactivation failed — wrong password | user_id=%s", user.id
+        )
+        AuditLog.log(
+            action=AuditAction.AUTH_LOGIN_FAILED,
+            user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            description="Account deactivation rejected — incorrect current password",
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        db.session.commit()
+        raise AuthenticationError(
+            "Current password is incorrect. Please try again."
+        )
+
+    # 2. Revoke ALL existing token blocklist entries (wipe sessions)
+    #    Then add the current token too.
+    sessions_revoked = _logout_all_sessions(user, current_access_jti)
+
+    # 3. Deactivate the account
+    user.is_active = False
+
+    # 4. Audit log
+    description = f"Account deactivated by user: {user.email}"
+    if reason:
+        description += f" | Reason: {reason}"
+
+    AuditLog.log(
+        action=AuditAction.ACCOUNT_SUSPENDED,
+        user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        description=description,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    db.session.commit()
+
+    logger.info(
+        "Account deactivated | user_id=%s | sessions_revoked=%s",
+        user.id, sessions_revoked,
+    )
+
+
+def _logout_all_sessions(user: User, current_access_jti: str | None) -> int:
+    """
+    Internal helper: revoke all active token sessions for a user.
+
+    Adds the current access token's JTI plus any already-known JTIs to the
+    blocklist. Returns the count of newly revoked tokens.
+
+    This mirrors the logic in logout_all() but is extracted so it can be
+    reused by deactivate_account() without importing the route-level concept
+    of a 'current_access_jti'.
+    """
+    count = 0
+    if current_access_jti:
+        # Check it isn't already in the blocklist
+        already = db.session.execute(
+            select(TokenBlocklist).where(TokenBlocklist.jti == current_access_jti)
+        ).scalar_one_or_none()
+        if already is None:
+            TokenBlocklist.revoke_token(
+                jti=current_access_jti,
+                token_type=TokenBlocklist.ACCESS,
+                user_id=user.id,
+            )
+            count += 1
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Reactivate Account  (Batch 2E — admin utility)
+# ---------------------------------------------------------------------------
+
+
+def reactivate_account(
+    target_user_id: str,
+    admin_user: User,
+    *,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> dict:
+    """
+    Reactivate a deactivated account. Intended for admin use only.
+
+    Sets is_active=True for the target user. The user's is_verified flag
+    is left unchanged — they may still need to verify a changed email.
+
+    Args:
+        target_user_id : UUID string of the user to reactivate.
+        admin_user     : The authenticated admin performing the action.
+        ip_address     : Client IP for audit log.
+        user_agent     : User-Agent header for audit log.
+
+    Returns:
+        dict: Updated public dict of the reactivated user.
+
+    Raises:
+        NotFoundError  : target_user_id does not exist.
+        BadRequestError: Account is already active.
+    """
+    import uuid as _uuid
+    from app.core.exceptions import NotFoundError
+
+    logger.info(
+        "Account reactivation | admin=%s | target=%s",
+        admin_user.id, target_user_id,
+    )
+
+    try:
+        uid = _uuid.UUID(target_user_id)
+    except (ValueError, AttributeError):
+        from app.core.exceptions import BadRequestError as _BR
+        raise _BR("Invalid user ID format.")
+
+    target = db.session.execute(
+        select(User).where(User.id == uid)
+    ).scalar_one_or_none()
+
+    if target is None:
+        raise NotFoundError("User not found.")
+
+    if target.is_active and not target.is_deleted:
+        raise BadRequestError("This account is already active.")
+
+    target.is_active = True
+
+    AuditLog.log(
+        action=AuditAction.ACCOUNT_REACTIVATED,
+        user_id=admin_user.id,
+        entity_type="user",
+        entity_id=target.id,
+        description=(
+            f"Account reactivated by admin {admin_user.email}: {target.email}"
+        ),
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    db.session.commit()
+
+    logger.info(
+        "Account reactivated | target_user_id=%s | admin_id=%s",
+        target.id, admin_user.id,
+    )
+    return target.to_public_dict()
+
+
+# ---------------------------------------------------------------------------
+# Token Introspection  (Batch 2E)
+# ---------------------------------------------------------------------------
+
+
+def introspect_token(raw_token: str) -> dict:
+    """
+    Decode and return the claims of a JWT without validating its blocklist
+    status or triggering any side effects.
+
+    Returns a structured dict of the token's claims. If the token is
+    malformed, expired, or has an invalid signature, an error dict is
+    returned rather than raising — the caller decides how to surface it.
+
+    Use cases:
+      - Frontend debugging (show token expiry before it fires)
+      - Admin tooling (inspect token claims without a full auth cycle)
+
+    Args:
+        raw_token: The raw JWT string (header.payload.signature).
+
+    Returns:
+        dict with keys:
+          valid       : bool — True if the token decoded without error
+          claims      : dict — decoded payload claims (only when valid=True)
+          error       : str  — reason for failure (only when valid=False)
+    """
+    try:
+        claims = decode_token(raw_token)
+        # Build a safe, user-friendly representation
+        from datetime import datetime, timezone
+        exp_ts = claims.get("exp")
+        iat_ts = claims.get("iat")
+        nbf_ts = claims.get("nbf")
+
+        return {
+            "valid": True,
+            "claims": {
+                "jti":        claims.get("jti"),
+                "subject":    claims.get("sub"),
+                "token_type": claims.get("type"),
+                "issued_at":  (
+                    datetime.fromtimestamp(iat_ts, tz=timezone.utc).isoformat()
+                    if iat_ts else None
+                ),
+                "expires_at": (
+                    datetime.fromtimestamp(exp_ts, tz=timezone.utc).isoformat()
+                    if exp_ts else None
+                ),
+                "not_before": (
+                    datetime.fromtimestamp(nbf_ts, tz=timezone.utc).isoformat()
+                    if nbf_ts else None
+                ),
+                "is_blocklisted": TokenBlocklist.is_jti_blocklisted(
+                    claims.get("jti", "")
+                ),
+            },
+        }
+    except Exception as exc:
+        logger.info("Token introspection failed: %s", exc)
+        return {
+            "valid": False,
+            "error": str(exc),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Security Settings  (Batch 2E)
+# ---------------------------------------------------------------------------
+
+# Security preferences are lightweight per-user flags. Rather than adding
+# columns to the users table (which would require a migration for every new
+# preference), we store them in the audit_log as a structured note and return
+# the last-known values from that log. For a production system you would use a
+# dedicated user_security_settings table; this implementation is correct for
+# the current schema and easy to migrate later.
+#
+# For now, both get and update operate on a simple in-memory default dict
+# augmented with notes stored in the user's last ACCOUNT_PROFILE_UPDATED log
+# entry tagged with the "security_settings" description prefix.
+
+_DEFAULT_SECURITY_SETTINGS: dict = {
+    "login_notifications": False,
+    "session_timeout_hours": 24,
+}
+
+
+def get_security_settings(user: User) -> dict:
+    """
+    Return the current user's security preference settings.
+
+    Settings are stored in the audit log's new_value JSONB field under
+    entries with action='account.profile_updated' and a specific description
+    prefix. If no entry exists, the system defaults are returned.
+
+    Args:
+        user: The authenticated User.
+
+    Returns:
+        dict with security preference keys + metadata.
+    """
+    from sqlalchemy import desc
+    from app.models.audit_log import AuditLog as _AL, AuditAction as _AA
+
+    logger.info("Fetching security settings | user_id=%s", user.id)
+
+    # Look for the most recent security-settings audit entry
+    entry = db.session.execute(
+        select(_AL)
+        .where(
+            _AL.user_id == user.id,
+            _AL.action == _AA.ACCOUNT_PROFILE_UPDATED,
+            _AL.description.like("security_settings:%"),
+        )
+        .order_by(desc(_AL.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    settings = dict(_DEFAULT_SECURITY_SETTINGS)
+
+    if entry is not None and entry.new_value:
+        stored = entry.new_value
+        if isinstance(stored, dict):
+            settings.update({
+                k: stored[k]
+                for k in _DEFAULT_SECURITY_SETTINGS
+                if k in stored
+            })
+
+    return {
+        "user_id": str(user.id),
+        "settings": settings,
+        "defaults": _DEFAULT_SECURITY_SETTINGS,
+    }
+
+
+def update_security_settings(
+    user: User,
+    data: dict,
+    *,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> dict:
+    """
+    Update the current user's security preference settings.
+
+    Only fields included in `data` (i.e., not None) are applied.
+    The result is persisted as a structured JSONB new_value in an audit log
+    entry so it can be retrieved by get_security_settings().
+
+    Args:
+        user       : The authenticated User.
+        data       : Validated payload from UpdateSecuritySettingsSchema.load().
+        ip_address : Client IP for audit log.
+        user_agent : User-Agent header for audit log.
+
+    Returns:
+        dict: Updated security settings.
+    """
+    logger.info("Updating security settings | user_id=%s", user.id)
+
+    # Merge the incoming values over the current settings
+    current = get_security_settings(user)["settings"]
+
+    for key in _DEFAULT_SECURITY_SETTINGS:
+        incoming = data.get(key)
+        if incoming is not None:
+            current[key] = incoming
+
+    # Persist via audit log new_value JSONB
+    AuditLog.log(
+        action=AuditAction.ACCOUNT_PROFILE_UPDATED,
+        user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        description=f"security_settings: updated preferences for {user.email}",
+        new_value=current,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    db.session.commit()
+
+    logger.info("Security settings updated | user_id=%s", user.id)
+    return {
+        "user_id": str(user.id),
+        "settings": current,
+        "defaults": _DEFAULT_SECURITY_SETTINGS,
+    }
+

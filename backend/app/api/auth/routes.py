@@ -30,6 +30,15 @@ Registered endpoints (Batch 2D):
   PATCH /api/v1/auth/profile/candidate   — Partial update of candidate profile
   PATCH /api/v1/auth/profile/recruiter   — Partial update of recruiter profile
 
+Registered endpoints (Batch 2E):
+  GET    /api/v1/auth/sessions               — List revoked/past sessions for session management UI
+  DELETE /api/v1/auth/sessions/<jti>         — Revoke a specific session by JTI
+  POST   /api/v1/auth/deactivate             — Self-service account deactivation (requires password)
+  POST   /api/v1/auth/reactivate/<user_id>   — Admin: reactivate a deactivated account
+  POST   /api/v1/auth/introspect             — Decode and inspect a JWT's claims
+  GET    /api/v1/auth/security-settings      — Get current user's security preferences
+  PATCH  /api/v1/auth/security-settings      — Update current user's security preferences
+
 Route handler contract:
   1. Parse JSON body (handle missing/malformed JSON gracefully).
   2. Validate with the appropriate Marshmallow schema.
@@ -59,6 +68,7 @@ from app.core.decorators import get_current_user, jwt_required_user
 from app.core.responses import created_response, success_response
 from app.core.responses import validation_error_response
 from app.schemas.auth import (
+    AccountDeactivationSchema,
     CandidateRegistrationSchema,
     ChangeEmailSchema,
     ChangePasswordSchema,
@@ -67,8 +77,10 @@ from app.schemas.auth import (
     RecruiterRegistrationSchema,
     ResendVerificationSchema,
     ResetPasswordSchema,
+    TokenIntrospectSchema,
     UpdateCandidateProfileSchema,
     UpdateRecruiterProfileSchema,
+    UpdateSecuritySettingsSchema,
 )
 from app.services import auth_service
 
@@ -94,6 +106,9 @@ _change_password_schema = ChangePasswordSchema()
 _change_email_schema = ChangeEmailSchema()
 _update_candidate_profile_schema = UpdateCandidateProfileSchema()
 _update_recruiter_profile_schema = UpdateRecruiterProfileSchema()
+_deactivation_schema = AccountDeactivationSchema()
+_introspect_schema = TokenIntrospectSchema()
+_security_settings_schema = UpdateSecuritySettingsSchema()
 
 
 # ---------------------------------------------------------------------------
@@ -764,3 +779,265 @@ def update_recruiter_profile():
         data=result,
     )
 
+
+# ---------------------------------------------------------------------------
+# Batch 2E Routes
+# ---------------------------------------------------------------------------
+
+
+@auth_bp.get("/sessions")
+@jwt_required_user
+def get_sessions():
+    """
+    List the authenticated user's revoked / past session entries.
+
+    Returns the last 50 token blocklist entries for this user, ordered
+    newest-first. This powers a session management UI where the user can
+    see and manage which sessions have been terminated.
+
+    Requires a valid JWT Bearer token in the Authorization header.
+
+    Responses:
+      200 OK           — Session list returned (may be empty)
+      401 Unauthorized — Missing or invalid token
+
+    Response data (200):
+      List of token blocklist entries (jti, token_type, created_at)
+    """
+    user = get_current_user()
+    sessions = auth_service.get_sessions(user)
+    return success_response(
+        message=f"Retrieved {len(sessions)} session record(s).",
+        data=sessions,
+    )
+
+
+@auth_bp.delete("/sessions/<string:jti>")
+@jwt_required_user
+def revoke_session(jti: str):
+    """
+    Revoke a specific session by its JWT ID (JTI).
+
+    Allows the user to terminate a specific active session (e.g. a phone
+    that was lost) without invalidating all other sessions. If the JTI is
+    already revoked, the request is treated as idempotent (success).
+
+    URL parameter:
+      jti : The JWT ID claim to revoke (from the session list).
+
+    Requires a valid JWT Bearer token in the Authorization header.
+
+    Responses:
+      200 OK           — Session revoked (or was already revoked)
+      401 Unauthorized — Missing or invalid token
+      404 Not Found    — JTI does not belong to this user
+    """
+    user = get_current_user()
+    auth_service.revoke_session(user=user, jti=jti, **_ctx())
+    return success_response(message="Session revoked successfully.")
+
+
+@auth_bp.post("/deactivate")
+@jwt_required_user
+def deactivate_account():
+    """
+    Self-service account deactivation.
+
+    Sets the account to is_active=False (soft deactivation — data is
+    preserved). All active sessions are invalidated immediately.
+    Requires the current password to prevent abuse of stolen tokens.
+
+    Deactivated accounts can only be reactivated by an admin via
+    POST /auth/reactivate/<user_id>.
+
+    Request body (JSON):
+      current_password : string, required — for identity confirmation
+      reason           : string, optional — stored in the audit log
+
+    Responses:
+      200 OK                   — Account deactivated; current session revoked
+      401 Unauthorized         — Wrong current_password or missing token
+      422 Unprocessable Entity — Validation error
+
+    Response data (200):
+      message only
+    """
+    body: dict = _get_json()
+    try:
+        data = _deactivation_schema.load(body)
+    except ValidationError as exc:
+        return validation_error_response(exc.messages)
+
+    user = get_current_user()
+    jwt_payload: dict = get_jwt()
+
+    auth_service.deactivate_account(
+        user=user,
+        current_password=data["current_password"],
+        reason=data.get("reason"),
+        current_access_jti=jwt_payload.get("jti"),
+        **_ctx(),
+    )
+
+    return success_response(
+        message=(
+            "Your account has been deactivated. "
+            "All active sessions have been terminated. "
+            "Contact support to reactivate your account."
+        )
+    )
+
+
+@auth_bp.post("/reactivate/<string:user_id>")
+@jwt_required_user
+def reactivate_account(user_id: str):
+    """
+    Admin: reactivate a previously deactivated user account.
+
+    Sets the target user's is_active=True. This endpoint is restricted
+    to users with the 'admin' role.
+
+    URL parameter:
+      user_id : UUID of the user to reactivate.
+
+    Requires a valid JWT Bearer token with the 'admin' role.
+
+    Responses:
+      200 OK           — Account reactivated
+      400 Bad Request  — Account is already active, or invalid UUID
+      401 Unauthorized — Missing or invalid token
+      403 Forbidden    — Caller is not an admin
+      404 Not Found    — User does not exist
+
+    Response data (200):
+      Updated user public dict for the reactivated user
+    """
+    from app.core.exceptions import AuthorizationError
+
+    admin = get_current_user()
+
+    if not admin.is_admin:
+        raise AuthorizationError(
+            "This endpoint is restricted to administrators."
+        )
+
+    result = auth_service.reactivate_account(
+        target_user_id=user_id,
+        admin_user=admin,
+        **_ctx(),
+    )
+
+    return success_response(
+        message="Account reactivated successfully.",
+        data=result,
+    )
+
+
+@auth_bp.post("/introspect")
+@jwt_required_user
+def introspect_token():
+    """
+    Decode and inspect a JWT's claims without triggering any side effects.
+
+    Accepts any raw JWT string and returns its decoded payload in a
+    human-readable format. The token's blocklist status is also reported.
+
+    Use cases:
+      - Frontend: display token expiry countdown
+      - Admin / developer tooling: inspect token claims
+      - Debugging: verify token was issued correctly
+
+    Request body (JSON):
+      token : string, required — the raw JWT string to inspect
+
+    Requires a valid JWT Bearer token in the Authorization header
+    (the token in the request body is the one being inspected, not
+    the auth token itself).
+
+    Responses:
+      200 OK                   — Introspection result (may be valid=false)
+      401 Unauthorized         — Missing or invalid auth token
+      422 Unprocessable Entity — Validation error (e.g. empty token field)
+
+    Response data (200):
+      { valid: bool, claims: { ... } }  or  { valid: false, error: "..." }
+    """
+    body: dict = _get_json()
+    try:
+        data = _introspect_schema.load(body)
+    except ValidationError as exc:
+        return validation_error_response(exc.messages)
+
+    result = auth_service.introspect_token(data["token"])
+    return success_response(
+        message="Token introspection complete.",
+        data=result,
+    )
+
+
+@auth_bp.get("/security-settings")
+@jwt_required_user
+def get_security_settings():
+    """
+    Return the authenticated user's security preference settings.
+
+    Settings include:
+      login_notifications   : bool — whether to send an email on each login
+      session_timeout_hours : int  — preferred session inactivity timeout
+
+    Requires a valid JWT Bearer token in the Authorization header.
+
+    Responses:
+      200 OK           — Security settings returned
+      401 Unauthorized — Missing or invalid token
+
+    Response data (200):
+      { user_id, settings: { ... }, defaults: { ... } }
+    """
+    user = get_current_user()
+    result = auth_service.get_security_settings(user)
+    return success_response(
+        message="Security settings retrieved successfully.",
+        data=result,
+    )
+
+
+@auth_bp.patch("/security-settings")
+@jwt_required_user
+def update_security_settings():
+    """
+    Update the authenticated user's security preference settings.
+
+    All fields are optional — only supplied fields are changed.
+
+    Request body (JSON — all fields optional):
+      login_notifications   : bool — enable/disable login email notifications
+      session_timeout_hours : int  — preferred timeout, 1–168 hours
+
+    Requires a valid JWT Bearer token in the Authorization header.
+
+    Responses:
+      200 OK                   — Settings updated
+      401 Unauthorized         — Missing or invalid token
+      422 Unprocessable Entity — Validation error (e.g. timeout out of range)
+
+    Response data (200):
+      { user_id, settings: { ... }, defaults: { ... } }
+    """
+    body: dict = _get_json()
+    try:
+        data = _security_settings_schema.load(body)
+    except ValidationError as exc:
+        return validation_error_response(exc.messages)
+
+    user = get_current_user()
+    result = auth_service.update_security_settings(
+        user=user,
+        data=data,
+        **_ctx(),
+    )
+
+    return success_response(
+        message="Security settings updated successfully.",
+        data=result,
+    )

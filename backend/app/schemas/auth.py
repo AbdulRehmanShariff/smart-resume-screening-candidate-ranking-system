@@ -912,3 +912,136 @@ class UpdateRecruiterProfileSchema(Schema):
     def validate_company_name(self, value: str | None) -> None:
         if value is not None and not value.strip():
             raise ValidationError("Company name must not be blank.")
+
+
+# ---------------------------------------------------------------------------
+# Account Deactivation Schema  (Batch 2E)
+# ---------------------------------------------------------------------------
+
+
+class AccountDeactivationSchema(Schema):
+    """
+    Validate POST /auth/deactivate request body.
+
+    Requires the caller's current password so that a stolen session token
+    cannot silently deactivate an account. The account is soft-deactivated
+    (is_active=False) rather than deleted so that the history is preserved
+    and the account can be reactivated by an admin.
+
+    Accepted fields:
+      current_password : string, required, load_only
+      reason           : string, optional — user's stated reason for deactivation
+    """
+
+    class Meta:
+        unknown = EXCLUDE
+
+    current_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Length(min=1, max=_MAX_PASSWORD_LEN),
+        metadata={"description": "Current password for identity re-confirmation."},
+    )
+
+    reason = fields.Str(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Length(max=500),
+        metadata={
+            "description": (
+                "Optional reason for deactivation. Stored in the audit log."
+            )
+        },
+    )
+
+    @pre_load
+    def strip_reason(self, data: dict, **kwargs: Any) -> dict:
+        """Strip whitespace from the optional reason field."""
+        if not isinstance(data, dict):
+            return data
+        if "reason" in data and isinstance(data["reason"], str):
+            data["reason"] = data["reason"].strip() or None
+        return data
+
+
+# ---------------------------------------------------------------------------
+# Token Introspect Schema  (Batch 2E)
+# ---------------------------------------------------------------------------
+
+
+class TokenIntrospectSchema(Schema):
+    """
+    Validate POST /auth/introspect request body.
+
+    Accepts a raw JWT string and returns its decoded claims if valid.
+    This is a developer/debugging endpoint — it does NOT modify any state.
+
+    Accepted fields:
+      token : string, required — the raw JWT to inspect
+    """
+
+    class Meta:
+        unknown = EXCLUDE
+
+    token = fields.Str(
+        required=True,
+        validate=validate.Length(min=1, max=4096),
+        metadata={"description": "The raw JWT string to introspect."},
+    )
+
+    @pre_load
+    def strip_token(self, data: dict, **kwargs: Any) -> dict:
+        """Strip accidental whitespace from the token string."""
+        if not isinstance(data, dict):
+            return data
+        if "token" in data and isinstance(data["token"], str):
+            data["token"] = data["token"].strip()
+        return data
+
+
+# ---------------------------------------------------------------------------
+# Update Security Settings Schema  (Batch 2E)
+# ---------------------------------------------------------------------------
+
+
+class UpdateSecuritySettingsSchema(Schema):
+    """
+    Validate PATCH /auth/security-settings request body.
+
+    All fields are optional (partial update). Controls per-user security
+    preferences that do not require changing core credentials.
+
+    Accepted fields (all optional):
+      login_notifications  : bool — receive an email on each new login
+      session_timeout_hours: int  — preferred session inactivity timeout (1–168 h)
+    """
+
+    class Meta:
+        unknown = EXCLUDE
+
+    login_notifications = fields.Bool(
+        load_default=None,
+        allow_none=True,
+        metadata={
+            "description": (
+                "If True, send an email notification on each successful login."
+            )
+        },
+    )
+
+    session_timeout_hours = fields.Int(
+        load_default=None,
+        allow_none=True,
+        validate=validate.Range(
+            min=1,
+            max=168,
+            error="session_timeout_hours must be between 1 and 168 (7 days).",
+        ),
+        metadata={
+            "description": (
+                "Preferred session inactivity timeout in hours (1–168). "
+                "This is a preference only; enforcement is in the JWT TTL config."
+            )
+        },
+    )
+
