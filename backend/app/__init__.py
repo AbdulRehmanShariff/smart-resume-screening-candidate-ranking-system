@@ -173,8 +173,8 @@ def _register_blueprints(app: Flask) -> None:
 
 
     # ---- Jobs (Stage 3) ----
-    # from app.api.jobs.routes import jobs_bp
-    # app.register_blueprint(jobs_bp, url_prefix=f"{api_prefix}/jobs")
+    from app.api.jobs.routes import jobs_bp
+    app.register_blueprint(jobs_bp, url_prefix=f"{api_prefix}/jobs")
 
     # ---- Resume (Stage 4) ----
     # from app.api.resume.routes import resume_bp
