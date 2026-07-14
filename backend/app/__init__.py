@@ -177,8 +177,8 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(jobs_bp, url_prefix=f"{api_prefix}/jobs")
 
     # ---- Resume (Stage 4) ----
-    # from app.api.resume.routes import resume_bp
-    # app.register_blueprint(resume_bp, url_prefix=f"{api_prefix}/resumes")
+    from app.api.resumes.routes import resumes_bp
+    app.register_blueprint(resumes_bp, url_prefix=f"{api_prefix}/resumes")
 
     # ---- Candidates (Stage 5) ----
     # from app.api.candidates.routes import candidates_bp

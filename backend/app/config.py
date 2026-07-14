@@ -101,6 +101,10 @@ class BaseConfig:
     )
     ALLOWED_JD_EXTENSIONS: frozenset = frozenset({"pdf", "txt"})
 
+    # Maximum file sizes (read by LocalStorage.from_app())
+    MAX_RESUME_SIZE_MB: int = int(os.environ.get("MAX_RESUME_SIZE_MB", 10))
+    MAX_JD_SIZE_MB: int = int(os.environ.get("MAX_JD_SIZE_MB", 5))
+
     # ------------------------------------------------------------------
     # Logging
     # ------------------------------------------------------------------
