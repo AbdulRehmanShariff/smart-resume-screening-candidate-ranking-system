@@ -88,12 +88,18 @@ class Resume(TimestampMixin, SoftDeleteMixin, db.Model):
 
     __tablename__ = "resumes"
     __table_args__ = (
-        # Deduplication: one unique file content per user
+        # Deduplication: one unique active file content per user.
+        # Partial index — enforces uniqueness only among non-deleted resumes
+        # (WHERE deleted_at IS NULL). Soft-deleted records retain their
+        # sha256_hash permanently for audit and historical integrity.
+        # A candidate may re-upload a previously deleted file; the new
+        # upload creates a fresh version without violating this constraint.
         Index(
             "uix_resumes_user_sha256",
             "user_id",
             "sha256_hash",
             unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
         ),
         # Partial unique index: enforce exactly one active primary resume per candidate.
         # Uses postgresql_where for a conditional index — only one row per user_id

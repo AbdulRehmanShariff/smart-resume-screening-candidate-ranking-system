@@ -359,6 +359,12 @@ def upload_resume(
 
     # ------------------------------------------------------------------
     # Step 3: Duplicate detection (per-user uniqueness on sha256_hash)
+    #
+    # The DB unique index uix_resumes_user_sha256 is a PARTIAL index
+    # enforcing uniqueness only on active (non-deleted) resumes:
+    #   WHERE deleted_at IS NULL
+    # This query mirrors that constraint exactly. A candidate may re-upload
+    # a previously deleted file — that creates a new version of that file.
     # ------------------------------------------------------------------
     existing: Optional[Resume] = db.session.execute(
         select(Resume).where(
@@ -451,17 +457,25 @@ def upload_resume(
     set_as_primary: bool = data.get("set_as_primary", False)
 
     if set_as_primary:
-        # Demote the current primary (if it is a different resume)
+        # Demote the current primary (if it is a different resume).
+        # IMPORTANT: flush the demote to the DB *before* setting is_primary=True
+        # on the new resume. The partial unique constraint
+        # (uix_resumes_one_primary_per_active_user) is immediate — PostgreSQL
+        # checks it after every individual statement. If the promote UPDATE
+        # reaches the DB before the demote UPDATE, the constraint sees two
+        # primary resumes transiently and raises IntegrityError.
+        # The explicit flush guarantees the order: demote → 0 primaries → promote.
         current_primary = _get_current_primary(candidate.id)
         if current_primary is not None and current_primary.id != resume.id:
             current_primary.is_primary = False
+            db.session.flush()   # demote lands first; constraint now sees 0 primaries
             logger.debug(
                 "Demoted previous primary resume | resume_id=%s",
                 current_primary.id,
             )
         resume.is_primary = True
     elif next_version == 1:
-        # First ever upload — auto-promote to primary
+        # First ever upload — auto-promote to primary (no existing primary to demote)
         resume.is_primary = True
         set_as_primary = True   # flag for log message accuracy
 
@@ -653,10 +667,14 @@ def set_primary(
         )
         return resume.to_dict()
 
-    # Demote current primary
+    # Demote current primary, then flush before promoting.
+    # The partial unique constraint (uix_resumes_one_primary_per_active_user)
+    # is immediate — flush guarantees the demote UPDATE reaches PostgreSQL
+    # before the promote UPDATE, so the constraint never sees two primaries.
     current_primary = _get_current_primary(candidate.id)
     if current_primary is not None:
         current_primary.is_primary = False
+        db.session.flush()   # demote lands first; constraint now sees 0 primaries
         logger.debug(
             "Demoted primary resume | old_primary_id=%s", current_primary.id
         )
@@ -747,12 +765,19 @@ def delete_resume(
 
     was_primary = resume.is_primary
 
-    # Soft-delete the DB record
+    # Soft-delete the DB record and clear primary flag.
     resume.soft_delete()
     resume.is_primary = False   # prevent orphaned primary flag
 
-    # Promote next-most-recent resume to primary if this was the primary
+    # Promote next-most-recent resume to primary if this was the primary.
+    # Flush first: the soft_delete (sets deleted_at) + is_primary=False must
+    # reach PostgreSQL before the promote UPDATE. Once deleted_at is set, this
+    # row exits the partial constraint scope, so promoting the next resume is
+    # safe. Without flush the promote UPDATE might land first, transiently
+    # creating two primary active resumes and violating the immediate constraint.
     if was_primary:
+        db.session.flush()   # soft-delete + demote land first
+
         next_primary: Optional[Resume] = db.session.execute(
             select(Resume)
             .where(

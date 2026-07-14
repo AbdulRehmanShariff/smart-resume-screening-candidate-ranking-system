@@ -13,14 +13,15 @@ Registered endpoints:
     GET  /api/v1/jobs/<job_id>         — Fetch a single job (visibility-aware)
 
   Recruiter-only (recruiter_required):
-    POST   /api/v1/jobs                     — Create a new draft job posting
-    GET    /api/v1/jobs/my                  — Recruiter's own jobs (all statuses)
-    PATCH  /api/v1/jobs/<job_id>           — Partial update of a job
-    DELETE /api/v1/jobs/<job_id>           — Soft-delete a job
-    POST   /api/v1/jobs/<job_id>/publish    — Transition → published
-    POST   /api/v1/jobs/<job_id>/pause      — Transition → paused
-    POST   /api/v1/jobs/<job_id>/close      — Transition → closed
-    POST   /api/v1/jobs/<job_id>/archive    — Transition → archived
+    POST   /api/v1/jobs                          — Create a new draft job posting
+    GET    /api/v1/jobs/my                       — Recruiter's own jobs (all statuses)
+    PATCH  /api/v1/jobs/<job_id>                — Partial update of a job
+    DELETE /api/v1/jobs/<job_id>                — Soft-delete a job
+    POST   /api/v1/jobs/<job_id>/publish         — Transition → published
+    POST   /api/v1/jobs/<job_id>/pause           — Transition → paused
+    POST   /api/v1/jobs/<job_id>/close           — Transition → closed
+    POST   /api/v1/jobs/<job_id>/archive         — Transition → archived
+    GET    /api/v1/jobs/<job_id>/applicants      — Paginated applicant list (Stage 5)
 
   Recruiter-only stats:
     GET    /api/v1/jobs/<job_id>/stats      — Application breakdown by status
@@ -61,13 +62,14 @@ from app.core.responses import (
     success_response,
     validation_error_response,
 )
+from app.schemas.application import ApplicationListFilterSchema
 from app.schemas.job import (
     CreateJobSchema,
     JobFilterSchema,
     JobStatusTransitionSchema,
     UpdateJobSchema,
 )
-from app.services import job_service
+from app.services import application_service, job_service
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,7 @@ _create_schema = CreateJobSchema()
 _update_schema = UpdateJobSchema()
 _filter_schema = JobFilterSchema()
 _transition_schema = JobStatusTransitionSchema()
+_applicant_filter_schema = ApplicationListFilterSchema()
 
 
 # ---------------------------------------------------------------------------
@@ -662,4 +665,56 @@ def get_job_stats(job_id: str):
     return success_response(
         message="Job statistics retrieved successfully.",
         data=stats,
+    )
+
+
+@jobs_bp.get("/<job_id>/applicants")
+@recruiter_required
+def list_job_applicants(job_id: str):
+    """
+    Return a paginated list of all applicants for a job (recruiter-only).
+
+    Only the job owner recruiter (or an admin) may access this endpoint.
+    Returns recruiter-facing serialization which includes AI scores,
+    match ranking, skill gap analysis, and private recruiter notes.
+
+    This endpoint is placed on the jobs blueprint (not applications)
+    because it is scoped to a specific job resource.
+
+    Path parameters:
+      job_id : UUID of the job posting
+
+    Query parameters:
+      status   : string — filter by application status
+      sort_by  : string — newest|oldest|score_desc|score_asc|status
+      page     : int    — default 1
+      per_page : int    — default 20, max 100
+
+    Responses:
+      200 OK           — Paginated applicant list
+      400 Bad Request  — Malformed UUID
+      401 Unauthorized — Missing or invalid JWT
+      403 Forbidden    — Recruiter does not own this job
+      404 Not Found    — Job not found
+      422 Unprocessable — Invalid filter parameters
+    """
+    recruiter = get_current_user()
+    raw: dict = _get_query_args()
+
+    try:
+        filters: dict = _applicant_filter_schema.load(raw)
+    except ValidationError as exc:
+        logger.debug(
+            "Applicant list filter validation failed | job_id=%s | errors=%s",
+            job_id,
+            exc.messages,
+        )
+        return validation_error_response(exc.messages)
+
+    result: dict = application_service.list_job_applicants(job_id, recruiter, filters)
+
+    return success_response(
+        message="Applicants retrieved successfully.",
+        data=result["applications"],
+        meta={"pagination": result["pagination"]},
     )
