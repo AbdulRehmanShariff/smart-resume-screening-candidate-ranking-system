@@ -120,10 +120,20 @@ class BaseConfig:
     MAX_PAGE_SIZE: int = 100
 
     # ------------------------------------------------------------------
-    # AI Services (activated in Stage 4)
+    # AI Services (activated in Stage 6)
     # ------------------------------------------------------------------
     GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY")
     GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-1.5-pro")
+
+    # Stage 6 AI Pipeline Config
+    GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", GEMINI_API_KEY)
+    AI_MODEL_NAME: str = os.environ.get("AI_MODEL_NAME", "gemini-1.5-flash")
+    AI_TEMPERATURE: float = float(os.environ.get("AI_TEMPERATURE", 0.2))
+    AI_EMBEDDING_MODEL: str = os.environ.get("AI_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    EMBEDDINGS_DIR: str = os.environ.get("EMBEDDINGS_DIR", "embeddings/")
+    FAISS_INDEX_PATH: str = os.environ.get("FAISS_INDEX_PATH", "embeddings/resumes.faiss")
+    AI_WORKER_POLL_INTERVAL: int = int(os.environ.get("AI_WORKER_POLL_INTERVAL", 5))
+    AI_WORKER_BATCH_SIZE: int = int(os.environ.get("AI_WORKER_BATCH_SIZE", 5))
 
 
 # --------------------------------------------------------------------------
