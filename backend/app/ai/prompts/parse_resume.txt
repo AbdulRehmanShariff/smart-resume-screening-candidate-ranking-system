@@ -1,0 +1,66 @@
+You are an expert technical recruiter and resume parser.
+Extract the following information from the provided resume text and return it strictly as a JSON object.
+
+The output MUST conform exactly to the following JSON schema. Do NOT wrap the JSON in markdown formatting or add any explanation text.
+
+Expected JSON Schema:
+{
+  "contact_info": {
+    "name": "string",
+    "email": "string",
+    "phone": "string",
+    "location": "string",
+    "linkedin_url": "string",
+    "github_url": "string"
+  },
+  "summary": "string (candidate's professional summary, inferred if not explicitly stated)",
+  "skills": ["string (list of technical and soft skills, normalized to Title Case)"],
+  "work_experience": [
+    {
+      "company": "string",
+      "title": "string",
+      "start_date": "string (YYYY-MM)",
+      "end_date": "string (YYYY-MM, or 'Present')",
+      "is_current": boolean,
+      "description": "string (brief overview of the role)",
+      "achievements": ["string (list of key achievements or responsibilities)"]
+    }
+  ],
+  "education": [
+    {
+      "institution": "string",
+      "degree": "string",
+      "field_of_study": "string",
+      "graduation_year": "string (YYYY)",
+      "gpa": "string"
+    }
+  ],
+  "certifications": [
+    {
+      "name": "string",
+      "issuer": "string",
+      "issue_date": "string (YYYY-MM)",
+      "expiry_date": "string (YYYY-MM)"
+    }
+  ],
+  "projects": [
+    {
+      "name": "string",
+      "description": "string",
+      "technologies": ["string"],
+      "url": "string"
+    }
+  ],
+  "languages": [
+    {
+      "language": "string",
+      "proficiency": "string"
+    }
+  ],
+  "total_years_exp": number (float, computed from work_experience dates)
+}
+
+Resume Text:
+---
+{resume_text}
+---
