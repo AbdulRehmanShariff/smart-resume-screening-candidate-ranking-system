@@ -111,6 +111,11 @@ def create_app(config_name: str = None) -> Flask:
     # ------------------------------------------------------------------
     _register_jwt_callbacks(app)
 
+    # ------------------------------------------------------------------
+    # Step 7: Register CLI commands
+    # ------------------------------------------------------------------
+    _register_cli_commands(app)
+
     logger.info(
         "Application started | name='%s' | env='%s'",
         app.config.get("APP_NAME"),
@@ -329,3 +334,36 @@ def _register_jwt_callbacks(app: Flask) -> None:
         return TokenBlocklist.is_jti_blocklisted(jti)
 
     logger.debug("JWT event callbacks registered")
+
+
+def _register_cli_commands(app: Flask) -> None:
+    """
+    Register custom Flask CLI commands (e.g. flask worker run).
+    """
+    import click
+
+    @app.cli.group()
+    def worker():
+        """Background worker commands."""
+        pass
+
+    @worker.command("run")
+    @click.option('--poll-interval', default=None, type=int, help='Seconds to wait when queue is empty')
+    @click.option('--max-jobs', default=0, type=int, help='Maximum number of jobs to process before exiting (0 = infinite)')
+    def run_worker(poll_interval, max_jobs):
+        """Start the background AI processing worker."""
+        from app.ai.worker import AIWorker
+        import os
+
+        if poll_interval is None:
+            poll_interval = app.config.get("AI_WORKER_POLL_INTERVAL", 5)
+            
+        faiss_index = app.config.get("FAISS_INDEX_PATH", "embeddings/resumes.faiss")
+        
+        # Ensure the embeddings directory exists
+        os.makedirs(os.path.dirname(faiss_index), exist_ok=True)
+        
+        worker_instance = AIWorker(app, faiss_index_path=faiss_index)
+        worker_instance.preflight()
+        worker_instance.run(poll_interval=poll_interval, max_jobs=max_jobs)
+
