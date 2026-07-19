@@ -1,0 +1,41 @@
+You are an expert technical recruiter matching a candidate against a job description.
+Score the candidate's fit for the job on a scale of 0 to 100 across 3 dimensions.
+
+The output MUST conform exactly to the following JSON schema. Do NOT wrap the JSON in markdown formatting or add any explanation text.
+
+Expected JSON Schema:
+{
+  "match_score": 78.5,
+  "score_breakdown": {
+    "skills_match": 80,
+    "experience_fit": 75,
+    "education_fit": 85,
+    "overall_fit": 74
+  },
+  "ranking_reason": {
+    "summary": "Strong Python skills, limited cloud experience.",
+    "strengths": ["5 years Python", "PostgreSQL expertise"],
+    "weaknesses": ["No Kubernetes experience", "No CI/CD mentioned"]
+  },
+  "skill_gap": {
+    "missing_required": ["Kubernetes", "Terraform"],
+    "missing_preferred": ["GraphQL"]
+  },
+  "interview_questions": [
+    { "question": "Describe your PostgreSQL optimization experience.", "rationale": "Core requirement.", "difficulty": "medium" }
+  ]
+}
+
+Job Title: {job_title}
+Job Level: {job_level}
+Job Description:
+---
+{job_description}
+---
+Required Skills: {required_skills}
+Preferred Skills: {preferred_skills}
+
+Candidate Resume Data:
+---
+{resume_data}
+---
