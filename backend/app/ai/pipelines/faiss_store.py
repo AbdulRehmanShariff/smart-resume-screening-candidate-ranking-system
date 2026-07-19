@@ -153,3 +153,6 @@ class FaissResumeStore:
         except portalocker.exceptions.LockException:
             logger.error("Failed to acquire shared lock to load FAISS index: %s", self.index_path)
             raise
+
+# Backward compatibility alias
+FAISSStore = FaissResumeStore

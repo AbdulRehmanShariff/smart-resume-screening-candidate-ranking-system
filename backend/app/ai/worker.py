@@ -9,14 +9,15 @@ import logging
 import traceback
 import platform
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from flask import current_app
 from sqlalchemy import text
 from app.extensions import db
 from app.models.ai_processing_job import AIProcessingJob, AIJobStatus
 from app.ai.dispatcher import dispatch
-from app.ai.pipelines.faiss_store import FAISSStore
+from app.ai.pipelines.faiss_store import FaissResumeStore
+from app.core.exceptions import ResumeNotReadyError
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class AIWorker:
         """Initialise models and FAISS store before accepting jobs."""
         with self.app.app_context():
             logger.info("Initializing FAISS store...")
-            self.faiss_store = FAISSStore(self.faiss_index_path)
+            self.faiss_store = FaissResumeStore(self.faiss_index_path)
             self.faiss_store.load()
             
             logger.info("Pre-loading embedding model...")
@@ -81,6 +82,13 @@ class AIWorker:
                         model_name=job.model_name or model_name
                     )
                     
+                    logger.info(f"Job {job.id} completed successfully in {processing_time_ms}ms")
+                    
+                except ResumeNotReadyError as e:
+                    logger.info(f"Job {job.id} deferred: {e} (requeueing in 15s)")
+                    job.status = AIJobStatus.QUEUED.value
+                    job.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=15)
+                    # Do NOT increment retry_count or mark as failed
                 except Exception as e:
                     logger.error(f"Job {job.id} failed: {e}")
                     job.mark_failed(
@@ -109,6 +117,7 @@ class AIWorker:
             )
             job = query.first()
             if job:
+                logger.info(f"Worker {self.worker_id} picked job {job.id} ({job.job_type})")
                 job.mark_started(self.worker_id)
                 db.session.commit()
                 return job

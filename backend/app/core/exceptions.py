@@ -232,3 +232,19 @@ class InternalError(AppException):
 
     status_code: int = HTTPStatus.INTERNAL_SERVER_ERROR.value
     default_message: str = "An internal error occurred. Please contact support"
+
+
+# ---------------------------------------------------------------------------
+# AI Pipeline Control Flow Exceptions
+# ---------------------------------------------------------------------------
+
+class ResumeNotReadyError(Exception):
+    """
+    Internal flow-control exception raised by the AI dispatcher when an
+    APPLICATION_RANK job executes before its corresponding RESUME_PARSE
+    job has finished.
+    
+    The AI worker catches this and safely requeues the job with a short
+    delay without consuming retry budgets or logging it as a failure.
+    """
+    pass

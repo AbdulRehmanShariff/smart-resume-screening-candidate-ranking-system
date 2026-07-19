@@ -190,12 +190,12 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(applications_bp, url_prefix=f"{api_prefix}/applications")
 
     # ---- Admin (Stage 6) ----
-    # from app.api.admin.routes import admin_bp
-    # app.register_blueprint(admin_bp, url_prefix=f"{api_prefix}/admin")
+    from app.api.admin.routes import admin_bp
+    app.register_blueprint(admin_bp, url_prefix=f"{api_prefix}/admin")
 
     # ---- AI (Stage 4+) ----
-    # from app.api.ai.routes import ai_bp
-    # app.register_blueprint(ai_bp, url_prefix=f"{api_prefix}/ai")
+    from app.api.ai.routes import ai_bp
+    app.register_blueprint(ai_bp, url_prefix=f"{api_prefix}/ai")
 
     logger.debug("Blueprints registered under prefix '%s'", api_prefix)
 

@@ -66,6 +66,7 @@ from app.extensions import db
 from app.models.audit_log import AuditAction, AuditLog
 from app.models.resume import Resume
 from app.models.user import User
+from app.models.ai_processing_job import AIProcessingJob, AIJobType
 from app.storage import LocalStorage, StorageError
 
 logger = logging.getLogger(__name__)
@@ -342,6 +343,8 @@ def upload_resume(
             "Send the file as 'resume' in a multipart/form-data request."
         )
 
+    logger.debug("[DEBUG-TRACE] Enter upload_resume()")
+
     # ------------------------------------------------------------------
     # Step 1: Compute SHA-256 by streaming — no full load into memory
     # ------------------------------------------------------------------
@@ -427,6 +430,8 @@ def upload_resume(
         )
         raise _storage_error_to_app_exception(exc) from exc
 
+    logger.debug("[DEBUG-TRACE] Resume saved via LocalStorage")
+
     # ------------------------------------------------------------------
     # Step 6: Create Resume ORM record
     # ------------------------------------------------------------------
@@ -505,9 +510,36 @@ def upload_resume(
     )
 
     # ------------------------------------------------------------------
+    # Step 9b: Enqueue RESUME_PARSE AI job
+    # ------------------------------------------------------------------
+    logger.debug("[DEBUG-TRACE] Creating AIProcessingJob")
+    ai_job = AIProcessingJob(
+        job_type=AIJobType.RESUME_PARSE.value,
+        entity_type="resume",
+        entity_id=resume.id,
+        priority=AIProcessingJob.PRIORITY_NORMAL,
+        input_data={
+            "resume_id": str(resume.id),
+        },
+    )
+    logger.debug("[DEBUG-TRACE] Executing db.session.add(ai_job)")
+    db.session.add(ai_job)
+    logger.debug("[DEBUG-TRACE] Executing db.session.flush()")
+    db.session.flush()
+
+    logger.info(
+        "AI job created | job_id=%s resume_id=%s job_type=%s",
+        ai_job.id,
+        resume.id,
+        ai_job.job_type
+    )
+
+    # ------------------------------------------------------------------
     # Step 10: Commit
     # ------------------------------------------------------------------
+    logger.debug("[DEBUG-TRACE] Executing db.session.commit()")
     db.session.commit()
+    logger.debug("[DEBUG-TRACE] Commit successful")
 
     logger.info(
         "Resume uploaded | resume_id=%s candidate_id=%s version=%d "

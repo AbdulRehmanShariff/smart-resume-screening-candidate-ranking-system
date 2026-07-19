@@ -15,6 +15,10 @@ Usage:
 
 import os
 from datetime import timedelta
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 
 
 class BaseConfig:
@@ -94,7 +98,7 @@ class BaseConfig:
     MAX_CONTENT_LENGTH: int = int(
         os.environ.get("MAX_CONTENT_LENGTH", 10 * 1024 * 1024)  # 10 MB
     )
-    UPLOAD_FOLDER: str = os.environ.get("UPLOAD_FOLDER", "uploads")
+    UPLOAD_FOLDER: str = os.environ.get("UPLOAD_FOLDER", str(BASE_DIR / "uploads"))
 
     ALLOWED_RESUME_EXTENSIONS: frozenset = frozenset(
         {"pdf", "docx", "txt", "png", "jpg", "jpeg"}

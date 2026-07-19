@@ -16,7 +16,7 @@ from app.models.application import Application
 from app.models.job import Job
 from app.models.system_settings import SystemSettings
 from app.extensions import db
-from app.core.exceptions import BadRequestError
+from app.core.exceptions import BadRequestError, ResumeNotReadyError
 
 from app.ai.extractors import extract_text
 from app.ai.pipelines.resume_parser import parse_resume
@@ -57,11 +57,22 @@ def _dispatch_resume_parse(job, faiss_store, api_key: str, model_name: str, temp
     resume.parse_status = Resume.PARSING
     db.session.commit()
     
-    upload_folder = current_app.config.get("UPLOAD_FOLDER", "uploads")
+    # --- DEBUG TEMPORARY LOGS ---
+    import os
+    logger.debug(f"[DEBUG-PATH] os.getcwd(): {os.getcwd()}")
+    logger.debug(f"[DEBUG-PATH] resume.file_path: {resume.file_path}")
+    logger.debug(f"[DEBUG-PATH] os.path.abspath(resume.file_path): {os.path.abspath(resume.file_path)}")
+    logger.debug(f"[DEBUG-PATH] os.path.exists(resume.file_path): {os.path.exists(resume.file_path)}")
+    logger.debug(f"[DEBUG-PATH] os.path.exists(os.path.abspath(resume.file_path)): {os.path.exists(os.path.abspath(resume.file_path))}")
+    # ----------------------------
+
+    from app.storage import LocalStorage
+    storage = LocalStorage.from_app(current_app)
+    
     if os.path.isabs(resume.file_path):
         abs_file_path = resume.file_path
     else:
-        abs_file_path = os.path.join(upload_folder, resume.file_path)
+        abs_file_path = storage.get_absolute_path(resume.file_path)
     
     raw_text = extract_text(abs_file_path, resume.file_type)
     
@@ -120,8 +131,12 @@ def _dispatch_application_rank(job, faiss_store, api_key: str, model_name: str, 
     resume = application.resume
     target_job = application.job
     
-    if resume.parse_status not in Resume.PARSEABLE_STATUSES:
-        raise BadRequestError("Resume not yet parsed")
+    if resume.parse_status in (Resume.QUEUED, Resume.PARSING):
+        raise ResumeNotReadyError("Resume is currently being parsed. Deferring job.")
+    elif resume.parse_status == Resume.FAILED:
+        raise BadRequestError("Cannot rank application because the resume failed to parse.")
+    elif resume.parse_status not in Resume.PARSEABLE_STATUSES:
+        raise BadRequestError(f"Resume not yet parsed (status: {resume.parse_status})")
         
     embed_model_name = SystemSettings.get_value_by_key("ai.embedding_model", default="all-MiniLM-L6-v2")
     
